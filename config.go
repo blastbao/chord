@@ -14,6 +14,8 @@ type Config struct {
 	StabilizeInterval        int // in ms
 	FixFingerInterval        int // in ms
 	CheckPredecessorInterval int // in ms
+
+	SuccessorListSize int
 }
 
 func DefaultConfig(addr string, port int) *Config {
@@ -30,6 +32,7 @@ func DefaultConfig(addr string, port int) *Config {
 		StabilizeInterval:        250,
 		FixFingerInterval:        50,
 		CheckPredecessorInterval: 150,
+		SuccessorListSize:        2,
 	}
 }
 

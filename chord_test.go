@@ -116,6 +116,56 @@ func TestFindSuccessor(t *testing.T) {
 
 }
 
+func TestSuccessorList(t *testing.T) {
+	var res int
+	var node *chordpb.Node
+	list1 := n1.successorList
+	list2 := n2.successorList
+	list3 := n3.successorList
+
+	node = list1[0]
+	assert.NotNil(t, node, "n1.successorList[0] should not return nil")
+	if node != nil {
+		res = bytes.Compare(node.Id, []byte{19})
+		assert.Equal(t, 0, res, "n1.successorList[0] should return 19")
+	}
+
+	node = list1[1]
+	assert.NotNil(t, node, "n1.successorList[1] should not return nil")
+	if node != nil {
+		res = bytes.Compare(node.Id, []byte{69})
+		assert.Equal(t, 0, res, "nn1.successorList[1] should return 69")
+	}
+
+	node = list2[0]
+	assert.NotNil(t, node, "n2.successorList[0] should not return nil")
+	if node != nil {
+		res = bytes.Compare(node.Id, []byte{118})
+		assert.Equal(t, 0, res, "n2.successorList[0] should return 118")
+	}
+
+	node = list2[1]
+	assert.NotNil(t, node, "n2.successorList[1] should not return nil")
+	if node != nil {
+		res = bytes.Compare(node.Id, []byte{19})
+		assert.Equal(t, 0, res, "n2.successorList[1] should return 19")
+	}
+
+	node = list3[0]
+	assert.NotNil(t, node, "n3.successorList[0] should not return nil")
+	if node != nil {
+		res = bytes.Compare(node.Id, []byte{69})
+		assert.Equal(t, 0, res, "n3.successorList[0] should return 69")
+	}
+
+	node = list3[1]
+	assert.NotNil(t, node, "n3.successorList[1] should not return nil")
+	if node != nil {
+		res = bytes.Compare(node.Id, []byte{118})
+		assert.Equal(t, 0, res, "n3.successorList[1] should return 118")
+	}
+}
+
 func TestLocate(t *testing.T) {
 	var res int
 	var err error

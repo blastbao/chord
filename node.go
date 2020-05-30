@@ -27,6 +27,9 @@ type Node struct {
 	successor *chordpb.Node
 	succMtx   sync.RWMutex
 
+	successorList []*chordpb.Node
+	succListMtx   sync.RWMutex
+
 	fingerTable fingerTable
 	ftMtx       sync.RWMutex
 
@@ -92,9 +95,10 @@ func newNode(config *Config) *Node {
 
 	// Initialize some attributes
 	n := &Node{
-		Node:     &chordpb.Node{Addr: config.Addr, Port: config.Port},
-		config:   config,
-		connPool: make(map[string]*clientConn),
+		Node:          &chordpb.Node{Addr: config.Addr, Port: config.Port},
+		config:        config,
+		successorList: make([]*chordpb.Node, config.SuccessorListSize),
+		connPool:      make(map[string]*clientConn),
 		grpcOpts: grpcOpts{
 			serverOpts: config.ServerOpts,
 			dialOpts:   config.DialOpts,
@@ -154,6 +158,7 @@ func newNode(config *Config) *Node {
 				PrintNode(n.Node, false, "Self")
 				PrintNode(n.predecessor, false, "Predecessor")
 				PrintNode(n.successor, false, "Successor")
+				PrintSuccessorList(n)
 				n.PrintFingerTable(false)
 				log.Printf("------------\n")
 			case <-n.shutdownCh:
@@ -169,6 +174,7 @@ func newNode(config *Config) *Node {
 		for {
 			select {
 			case <-ticker.C:
+
 				n.stabilize()
 			case <-n.shutdownCh:
 				ticker.Stop()
@@ -250,6 +256,8 @@ func (n *Node) create() {
 	n.succMtx.Lock()
 	n.successor = n.Node
 	n.succMtx.Unlock()
+
+	n.initSuccessorList()
 }
 
 /*
@@ -295,6 +303,10 @@ func (n *Node) stabilize() {
 	successor.notify(n)
 	*/
 
+	// MY MODIFICATIONS
+	n.updateSuccessorList()
+	// ---------------
+
 	// Must have a successor first prior to running stabilization
 	n.succMtx.RLock()
 	succ := n.successor
@@ -328,6 +340,66 @@ func (n *Node) stabilize() {
 	n.succMtx.RUnlock()
 
 	_ = n.NotifyRPC(succ)
+}
+
+/*
+ * Function:	updateSuccessorList
+ *
+ * Description:
+ *		An addition to the Chord stabilization protocol. Update the successor list
+ * 		periodically. If n notices its successor has failed, it will replace
+ * 		its successor with the next entry in the successor list and reconcile its
+ * 		list with its new successor.
+ */
+func (n *Node) updateSuccessorList() {
+	var succ *chordpb.Node
+
+	index := 0
+	for {
+		n.succMtx.RLock()
+		succ = n.successor
+		n.succMtx.RUnlock()
+
+		succList, err := n.GetSuccessorListRPC(succ)
+		if err != nil {
+			log.Errorf("successor failed while calling GetSuccessorListRPC: %v\n", err)
+			// update successor the next entry in successor table
+			n.succMtx.Lock()
+			n.succListMtx.RLock()
+			n.successor = n.successorList[index+1]
+			n.succListMtx.RUnlock()
+			n.succMtx.Unlock()
+			index++
+		} else {
+			n.reconcileSuccessorList(succList)
+			break
+		}
+	}
+
+}
+
+/*
+ * Function:	reconcileSuccessorList
+ *
+ * Description:
+ *		Node n reconciles its list with successor s by copying s's list,
+ * 		removing the last element, and prepending s to it.
+ */
+func (n *Node) reconcileSuccessorList(succList *chordpb.SuccessorList) {
+	n.succMtx.RLock()
+	succ := n.successor
+	n.succMtx.RUnlock()
+
+	// Remove succList's last element
+	list := succList.Successors
+	copy(list[1:], list)
+	// Prepend our successor to the list
+	list[0] = succ
+
+	// Update our successor list
+	n.succListMtx.Lock()
+	n.successorList = list
+	n.succListMtx.Unlock()
 }
 
 /*
@@ -395,6 +467,21 @@ func (n *Node) checkPredecessor() {
 		n.predecessor = nil
 		n.predMtx.Unlock()
 	}
+}
+
+/*
+ * Function:	initSuccessorList
+ *
+ * Description:
+ *		Initialize values of successor list to current successor. Only
+ * 		used by creator of chord ring.
+ */
+func (n *Node) initSuccessorList() {
+	n.succMtx.Lock()
+	for i, _ := range n.successorList {
+		n.successorList[i] = n.successor
+	}
+	n.succMtx.Unlock()
 }
 
 /*

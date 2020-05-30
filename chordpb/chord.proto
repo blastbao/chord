@@ -1,7 +1,7 @@
 syntax = "proto3";
 
 package chord;
-option go_package = "chord/chordpb";
+option go_package = "github.com/cdesiniotis/chord/chordpb";
 
 service chord {
     // Find the successor of the given ID
@@ -12,7 +12,8 @@ service chord {
     rpc Notify(Node) returns (empty) {};
     // Check if predecessor is still alive
     rpc CheckPredecessor(empty) returns (empty) {};
-
+    // Get successor list of a node
+    rpc GetSuccessorList(empty) returns (SuccessorList);
     // Get a value
     rpc Get(Key) returns (Value) {};
     // Create a new key-value pair
@@ -27,6 +28,10 @@ message Node {
     bytes id = 1;
     string addr = 2;
     uint32 port = 3;
+}
+
+message SuccessorList {
+    repeated Node successors = 1;
 }
 
 message PeerID {

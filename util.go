@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
+	"fmt"
 	"github.com/cdesiniotis/chord/chordpb"
 	log "github.com/sirupsen/logrus"
 	"math"
@@ -114,4 +115,19 @@ func PrintNode(n *chordpb.Node, hex bool, label string) {
 		log.Infof("%s - {id: %d\t addr: %s\t port: %d}\n", label, n.Id, n.Addr, n.Port)
 	}
 
+}
+
+/* Function:	PrintSuccessorList
+ *
+ * Description:
+ *		Print out a node's successor list
+ *
+ */
+func PrintSuccessorList(n *Node) {
+	n.succListMtx.RLock()
+	defer n.succListMtx.RUnlock()
+
+	for i, node := range n.successorList {
+		PrintNode(node, false, fmt.Sprintf("Successor %d", i))
+	}
 }

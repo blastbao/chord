@@ -132,6 +132,24 @@ func (n *Node) CheckPredecessorRPC(other *chordpb.Node) (*chordpb.Empty, error) 
 	return resp, err
 }
 
+/* Function: 	GetSuccessorListRPC
+ *
+ * Description:
+ *		Get another node's successor list
+ */
+func (n *Node) GetSuccessorListRPC(other *chordpb.Node) (*chordpb.SuccessorList, error) {
+	client, err := n.getChordClient(other)
+	if err != nil {
+		log.Errorf("error getting Chord Client: %v", err)
+		return nil, err
+	}
+	req := &chordpb.Empty{}
+
+	ctx, _ := context.WithTimeout(context.Background(), n.grpcOpts.timeout)
+	resp, err := client.GetSuccessorList(ctx, req)
+	return resp, err
+}
+
 func (n *Node) GetRPC(other *chordpb.Node, key string) (*chordpb.Value, error) {
 	client, err := n.getChordClient(other)
 	if err != nil {
@@ -224,6 +242,17 @@ func (n *Node) Notify(context context.Context, node *chordpb.Node) (*chordpb.Emp
  */
 func (n *Node) CheckPredecessor(context context.Context, empty *chordpb.Empty) (*chordpb.Empty, error) {
 	return &chordpb.Empty{}, nil
+}
+
+/* Function: 	GetSuccessorList
+ *
+ * Description:
+ *		Return a node's successor list
+ */
+func (n *Node) GetSuccessorList(context context.Context, empty *chordpb.Empty) (*chordpb.SuccessorList, error) {
+	n.succListMtx.RLock()
+	defer n.succListMtx.RUnlock()
+	return &chordpb.SuccessorList{Successors: n.successorList}, nil
 }
 
 /* Function: 	Get
