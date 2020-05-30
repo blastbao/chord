@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package chord;
+option go_package = "chord/chordpb";
+
+service chord {
+    // Find the successor of the given ID
+    rpc FindSuccessor(PeerID) returns (Node) {};
+    // Get the current predecessor of a node
+    rpc GetPredecessor(empty) returns (Node) {};
+    // A Node thinks it is our predecessor and it is notifying us!
+    rpc Notify(Node) returns (empty) {};
+    // Check if predecessor is still alive
+    rpc CheckPredecessor(empty) returns (empty) {};
+
+    // Get a value
+    rpc Get(Key) returns (Value) {};
+    // Create a new key-value pair
+    rpc Put(KV) returns (empty) {};
+    // Locate the node containing a key
+    rpc Locate(Key) returns (Node);
+}
+
+message empty { }
+
+message Node {
+    bytes id = 1;
+    string addr = 2;
+    uint32 port = 3;
+}
+
+message PeerID {
+    bytes id = 1;
+}
+
+message Key {
+    string key = 1;
+}
+
+message Value {
+    bytes value = 1;
+}
+
+message KV {
+    string key = 1;
+    bytes value = 2;
+}
