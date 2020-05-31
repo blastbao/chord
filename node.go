@@ -431,18 +431,48 @@ func (n *Node) findSuccessor(id []byte) (*chordpb.Node, error) {
  *
  * Description:
  *		Check finger table and find closest preceding node for a given id.
+ * 		Check both the finger table and successor list.
  */
 func (n *Node) closestPrecedingNode(id []byte) *chordpb.Node {
-	n.ftMtx.RLock()
-	defer n.ftMtx.RUnlock()
+	var ftNode *chordpb.Node
+	var succListNode *chordpb.Node
 
+	// Look in finger table
+	n.ftMtx.RLock()
 	for i := len(id) - 1; i >= 0; i-- {
 		if Between(n.fingerTable[i].Id, n.Id, id) {
-			ret := n.fingerTable[i].Node
-			return ret
+			ftNode = n.fingerTable[i].Node
+			break
 		}
 	}
-	return n.Node
+	n.ftMtx.RUnlock()
+
+	// Look in successor list
+	n.succListMtx.RLock()
+	for i := n.config.SuccessorListSize - 1; i >= 0; i--{
+		if Between(n.successorList[i].Id, n.Id, id) {
+			succListNode = n.successorList[i]
+			break
+		}
+	}
+	n.succListMtx.RUnlock()
+
+	// Check if no node was found in either of the lists
+	if ftNode == nil && succListNode == nil {
+		return n.Node
+	} else if ftNode == nil {
+		return succListNode
+	} else if succListNode == nil {
+		return ftNode
+	}
+
+	// See which node is closer to id
+	if Between(ftNode.Id, succListNode.Id, id) {
+		return ftNode
+	} else {
+		return succListNode
+	}
+
 }
 
 /*
