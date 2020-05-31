@@ -96,6 +96,20 @@ func Between(key, a, b []byte) bool {
 	return false
 }
 
+/* Function:	Contains
+ *
+ * Description:
+ *		Returns true if node is in list.
+ */
+func Contains(list []*chordpb.Node, node *chordpb.Node) bool {
+	for _, n := range list {
+		if bytes.Equal(n.Id, node.Id) {
+			return true
+		}
+	}
+	return false
+}
+
 /* Function:	PrintNode
  *
  * Description:

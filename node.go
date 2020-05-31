@@ -409,6 +409,7 @@ func (n *Node) reconcileSuccessorList(succList *chordpb.SuccessorList) {
  *		Find the successor node for the given id. First check if id ∈ (n, successor].
  *		If this is not the case then forward the request to the closest preceding node.
  */
+// TODO: come back to this after implementing replica groups
 func (n *Node) findSuccessor(id []byte) (*chordpb.Node, error) {
 	n.succMtx.RLock()
 	succ := n.successor
@@ -417,11 +418,21 @@ func (n *Node) findSuccessor(id []byte) (*chordpb.Node, error) {
 	if BetweenRightIncl(id, n.Id, succ.Id) {
 		return succ, nil
 	} else {
-		n2 := n.closestPrecedingNode(id)
+		exclude := []*chordpb.Node{}
+		n2 := n.closestPrecedingNode(id, exclude...)
 		res, err := n.FindSuccessorRPC(n2, id)
+
+		// if FindSuccessorRPC timeouts, try next best predecessor
+		if err != nil {
+			exclude = append(exclude, n2)
+			n2 = n.closestPrecedingNode(id, exclude...)
+			res, err = n.FindSuccessorRPC(n2, id)
+		}
+
 		if err != nil {
 			return nil, err
 		}
+
 		return res, nil
 	}
 }
@@ -431,16 +442,21 @@ func (n *Node) findSuccessor(id []byte) (*chordpb.Node, error) {
  *
  * Description:
  *		Check finger table and find closest preceding node for a given id.
- * 		Check both the finger table and successor list.
+ * 		Check both the finger table and successor list. Do not return the node
+ * 		if it is in the list "exclude"
  */
-func (n *Node) closestPrecedingNode(id []byte) *chordpb.Node {
+func (n *Node) closestPrecedingNode(id []byte, exclude ...*chordpb.Node) *chordpb.Node {
 	var ftNode *chordpb.Node
 	var succListNode *chordpb.Node
 
 	// Look in finger table
 	n.ftMtx.RLock()
 	for i := len(id) - 1; i >= 0; i-- {
-		if Between(n.fingerTable[i].Id, n.Id, id) {
+		ftEntry := n.fingerTable[i]
+		if Contains(exclude, ftEntry.Node) {
+			continue
+		}
+		if Between(ftEntry.Id, n.Id, id) {
 			ftNode = n.fingerTable[i].Node
 			break
 		}
@@ -450,7 +466,11 @@ func (n *Node) closestPrecedingNode(id []byte) *chordpb.Node {
 	// Look in successor list
 	n.succListMtx.RLock()
 	for i := n.config.SuccessorListSize - 1; i >= 0; i--{
-		if Between(n.successorList[i].Id, n.Id, id) {
+		succListEntry := n.successorList[i]
+		if Contains(exclude, succListEntry) {
+			continue
+		}
+		if Between(succListEntry.Id, n.Id, id) {
 			succListNode = n.successorList[i]
 			break
 		}
