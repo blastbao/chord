@@ -26,7 +26,7 @@ func DefaultConfig(addr string, port int) *Config {
 		KeySize:                  8,
 		Addr:                     addr,
 		Port:                     uint32(port),
-		Timeout:                  2000,
+		Timeout:                  5000,
 		DialOpts:                 dialOpts,
 		ServerOpts:               serverOpts,
 		StabilizeInterval:        250,

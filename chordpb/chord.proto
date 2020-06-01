@@ -13,13 +13,16 @@ service chord {
     // Check if predecessor is still alive
     rpc CheckPredecessor(empty) returns (empty) {};
     // Get successor list of a node
-    rpc GetSuccessorList(empty) returns (SuccessorList);
+    rpc GetSuccessorList(empty) returns (SuccessorList) {};
+    // Receive coordinator messages from nodes who are the cooridinators
+    // for replica groups around the chord ring
+    rpc RecvCoordinatorMsg(CoordinatorMsg) returns (empty) {};
     // Get a value
     rpc Get(Key) returns (Value) {};
     // Create a new key-value pair
     rpc Put(KV) returns (empty) {};
     // Locate the node containing a key
-    rpc Locate(Key) returns (Node);
+    rpc Locate(Key) returns (Node) {};
 }
 
 message empty { }
@@ -32,6 +35,11 @@ message Node {
 
 message SuccessorList {
     repeated Node successors = 1;
+}
+
+message CoordinatorMsg {
+    bytes oldLeaderId = 1;
+    bytes newLeaderId = 2;
 }
 
 message PeerID {

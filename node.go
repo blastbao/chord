@@ -43,6 +43,10 @@ type Node struct {
 	data    map[string][]byte
 	dataMtx sync.RWMutex
 
+	rgs 	map[uint64]*ReplicaGroup
+	rgsMtx	sync.RWMutex
+	rgFlag	int		// set to 1 initially, 0 after node sends its first Coordinator Msg
+
 	signalChannel chan os.Signal
 	shutdownCh    chan struct{}
 }
@@ -104,6 +108,8 @@ func newNode(config *Config) *Node {
 			dialOpts:   config.DialOpts,
 			timeout:    time.Duration(config.Timeout) * time.Millisecond},
 		data:          make(map[string][]byte),
+		rgs:		make(map[uint64]*ReplicaGroup),
+		rgFlag: 	1,
 		shutdownCh:    make(chan struct{}),
 		signalChannel: make(chan os.Signal, 1),
 	}
@@ -114,6 +120,10 @@ func newNode(config *Config) *Node {
 
 	// Create new finger table
 	n.fingerTable = NewFingerTable(n, config.KeySize)
+
+	// Allocate a RG for us
+	id := BytesToUint64(n.Id)
+	n.rgs[id] = &ReplicaGroup{leaderId:n.Id, data:make(map[string][]byte)}
 
 	// Create a listening socket for the chord grpc server
 	lis, err := net.Listen("tcp", key)
@@ -159,6 +169,7 @@ func newNode(config *Config) *Node {
 				PrintNode(n.predecessor, false, "Predecessor")
 				PrintNode(n.successor, false, "Successor")
 				PrintSuccessorList(n)
+				PrintReplicaGroupMembership(n)
 				n.PrintFingerTable(false)
 				log.Printf("------------\n")
 			case <-n.shutdownCh:
@@ -283,6 +294,8 @@ func (n *Node) join(other *chordpb.Node) error {
 	n.successor = succ
 	n.succMtx.Unlock()
 
+	n.initSuccessorList()
+
 	return nil
 }
 
@@ -355,7 +368,7 @@ func (n *Node) updateSuccessorList() {
 	var succ *chordpb.Node
 
 	index := 0
-	for {
+	for index < n.config.SuccessorListSize {
 		n.succMtx.RLock()
 		succ = n.successor
 		n.succMtx.RUnlock()
@@ -364,6 +377,9 @@ func (n *Node) updateSuccessorList() {
 		if err != nil {
 			log.Errorf("successor failed while calling GetSuccessorListRPC: %v\n", err)
 			// update successor the next entry in successor table
+			if index == n.config.SuccessorListSize - 1 {
+				break
+			}
 			n.succMtx.Lock()
 			n.succListMtx.RLock()
 			n.successor = n.successorList[index+1]
@@ -388,18 +404,45 @@ func (n *Node) updateSuccessorList() {
 func (n *Node) reconcileSuccessorList(succList *chordpb.SuccessorList) {
 	n.succMtx.RLock()
 	succ := n.successor
+	currList := n.successorList
 	n.succMtx.RUnlock()
 
 	// Remove succList's last element
-	list := succList.Successors
-	copy(list[1:], list)
+	newList := succList.Successors
+	copy(newList[1:], newList)
 	// Prepend our successor to the list
-	list[0] = succ
+	newList[0] = succ
 
 	// Update our successor list
 	n.succListMtx.Lock()
-	n.successorList = list
+	n.successorList = newList
 	n.succListMtx.Unlock()
+
+	// If successor list changed, initiate leader election
+	same := CompareSuccessorLists(currList, newList)
+	if !same {
+		newLeaderId := n.Id
+		oldLeaderId := newLeaderId
+
+		// node just joined the chord ring
+		if n.rgFlag == 1 {
+			// first allocate a new replica group for ourselves
+			//id := BytesToUint64(n.Id)
+			//n.rgs[id] = &ReplicaGroup{leaderId:n.Id, data:make(map[string][]byte)}
+			// set oldLeaderId to empty so receiving nodes know a new node has joined
+			oldLeaderId = []byte{}
+			n.rgFlag = 0
+		}
+
+		// Send coordinator messages to all successors (members of the replica group)
+		log.Infof("In reconcileSuccessorList() - sending coordinator msg: new %d\t old: %d\n", newLeaderId, oldLeaderId)
+		for _, node := range newList {
+			n.RecvCoordinatorMsgRPC(node, newLeaderId, oldLeaderId)
+		}
+
+		// TODO: transfer data replicas to members of RG
+	}
+
 }
 
 /*
@@ -512,7 +555,24 @@ func (n *Node) checkPredecessor() {
 
 	_, err := n.CheckPredecessorRPC(pred)
 	if err != nil {
-		log.Infof("detected predecessor has failed\n")
+		log.Infof("detected predecessor has failed - %v\n", err)
+
+		// TODO: tranfer data to our RG before deleting it
+		// remove membership to RG whose leader is the failed node
+		id := BytesToUint64(pred.Id)
+		n.removeRgMembership(id)
+
+		// initiate new leader election
+		n.succListMtx.RLock()
+		succList := n.successorList
+		n.succListMtx.RUnlock()
+		// send coordinator msg to all
+		log.Infof("In checkPredecessor() - sending coordinator msg: new %d\t old: %d\n", n.Id, pred.Id)
+		for _, node := range  succList {
+			n.RecvCoordinatorMsgRPC(node, n.Id, pred.Id)
+		}
+		// TODO: transfer data replicas to new members of RG
+
 		n.predMtx.Lock()
 		n.predecessor = nil
 		n.predMtx.Unlock()

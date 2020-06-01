@@ -1,6 +1,7 @@
 package chord
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"github.com/cdesiniotis/chord/chordpb"
@@ -150,6 +151,20 @@ func (n *Node) GetSuccessorListRPC(other *chordpb.Node) (*chordpb.SuccessorList,
 	return resp, err
 }
 
+func (n *Node) RecvCoordinatorMsgRPC(other *chordpb.Node, newLeaderId []byte, oldLeaderId []byte) (error) {
+	client, err := n.getChordClient(other)
+	if err != nil {
+		log.Errorf("error getting Chord Client: %v", err)
+		return err
+	}
+	req := &chordpb.CoordinatorMsg{NewLeaderId:newLeaderId, OldLeaderId:oldLeaderId}
+
+	// TODO: consider not sending with timeout here
+	ctx, _ := context.WithTimeout(context.Background(), n.grpcOpts.timeout)
+	_, err = client.RecvCoordinatorMsg(ctx, req)
+	return err
+}
+
 func (n *Node) GetRPC(other *chordpb.Node, key string) (*chordpb.Value, error) {
 	client, err := n.getChordClient(other)
 	if err != nil {
@@ -253,6 +268,58 @@ func (n *Node) GetSuccessorList(context context.Context, empty *chordpb.Empty) (
 	n.succListMtx.RLock()
 	defer n.succListMtx.RUnlock()
 	return &chordpb.SuccessorList{Successors: n.successorList}, nil
+}
+
+func (n *Node) RecvCoordinatorMsg(context context.Context, msg *chordpb.CoordinatorMsg) (*chordpb.Empty, error) {
+
+	if bytes.Equal(n.Id, msg.NewLeaderId) {
+		return &chordpb.Empty{}, nil
+	}
+
+	log.Infof("ReceivedCoordinatorMsg(): newLeaderID: %d\t oldLeaderID: %d\n", msg.NewLeaderId, msg.OldLeaderId)
+
+	if len(msg.OldLeaderId) == 0 {
+		// New node has joined chord ring
+
+		// Remove farthest RG membership
+		n.removeFarthestRgMembership()
+
+		// Add new RG
+		newLeaderId := BytesToUint64(msg.NewLeaderId)
+		n.addRgMembership(newLeaderId)
+
+	} else {
+
+		newLeaderId := BytesToUint64(msg.NewLeaderId)
+		oldLeaderId := BytesToUint64(msg.OldLeaderId)
+
+		// Check if new leader or old leader is currently the leader
+		// for a replica group we are a part of
+		n.rgsMtx.RLock()
+		_, newLeaderExists := n.rgs[newLeaderId]
+		_, oldLeaderExists := n.rgs[oldLeaderId]
+		n.rgsMtx.RUnlock()
+
+		// Two cases where our replica group membership changes
+		if newLeaderExists && oldLeaderExists {
+			if (newLeaderId == oldLeaderId) {
+				// RG membership has not changed - we are already in this RG
+				return &chordpb.Empty{}, nil
+			}
+			// RG membership has changed, remove old leader
+			n.removeRgMembership(oldLeaderId)
+		} else if !newLeaderExists {
+			if oldLeaderExists {
+				// remove old leader which has presumably failed
+				n.removeRgMembership(oldLeaderId)
+			}
+			// RG membership has changed, add new leader
+			n.addRgMembership(newLeaderId)
+		}
+
+	}
+
+	return &chordpb.Empty{}, nil
 }
 
 /* Function: 	Get
