@@ -40,9 +40,6 @@ type Node struct {
 	connPool    map[string]*clientConn
 	connPoolMtx sync.RWMutex
 
-	data    map[string][]byte
-	dataMtx sync.RWMutex
-
 	rgs 	map[uint64]*ReplicaGroup
 	rgsMtx	sync.RWMutex
 	rgFlag	int		// set to 1 initially, 0 after node sends its first Coordinator Msg
@@ -107,7 +104,6 @@ func newNode(config *Config) *Node {
 			serverOpts: config.ServerOpts,
 			dialOpts:   config.DialOpts,
 			timeout:    time.Duration(config.Timeout) * time.Millisecond},
-		data:          make(map[string][]byte),
 		rgs:		make(map[uint64]*ReplicaGroup),
 		rgFlag: 	1,
 		shutdownCh:    make(chan struct{}),
@@ -610,9 +606,10 @@ func (n *Node) get(key string) ([]byte, error) {
 
 	if bytes.Compare(n.Id, node.Id) == 0 {
 		// key is stored at current node
-		n.dataMtx.RLock()
-		val, ok := n.data[key]
-		n.dataMtx.RUnlock()
+		myId := BytesToUint64(n.Id)
+		n.rgsMtx.RLock()
+		val, ok := n.rgs[myId].data[key]
+		n.rgsMtx.RUnlock()
 
 		if !ok {
 			return nil, errors.New("key does not exist in datastore")
@@ -647,9 +644,11 @@ func (n *Node) put(key string, value []byte) error {
 
 	if bytes.Compare(n.Id, node.Id) == 0 {
 		// key belongs to current node
-		n.dataMtx.Lock()
-		n.data[key] = value
-		n.dataMtx.Unlock()
+		myId := BytesToUint64(n.Id)
+		n.rgsMtx.RLock()
+		n.rgs[myId].data[key] = value
+		n.rgsMtx.RUnlock()
+
 		return nil
 	} else {
 		// key belongs to remote node
