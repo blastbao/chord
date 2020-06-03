@@ -153,7 +153,7 @@ func PrintReplicaGroupMembership(n *Node) {
 
 	log.Infof("------Replica Group Membership------\n")
 	for id, _ := range n.rgs {
-		log.Infof("RG Leader ID: %d\n", id)
+		log.Infof("RG Leader ID: %d\t RG data: %v\n", id, n.rgs[id].data)
 	}
 }
 

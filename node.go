@@ -286,6 +286,23 @@ func (n *Node) join(other *chordpb.Node) error {
 		return err
 	}
 
+	// Get keys from successor that we are now responsible for
+	kvs, err := n.GetKeysRPC(succ, n.Id)
+	if err != nil {
+		log.Errorf("error callling GetKeysRPC(): %v\n", err)
+		return err
+	}
+
+	// Add keys to our replica group
+	// On the first call to stabilize() we will initiate a leader election
+	// and notify our successor list that we are the new leader
+	ourId := BytesToUint64(n.Id)
+	n.rgsMtx.Lock()
+	for _, kv := range kvs.Kvs {
+		n.rgs[ourId].data[kv.Key] = kv.Value
+	}
+	n.rgsMtx.Unlock()
+
 	n.succMtx.Lock()
 	n.successor = succ
 	n.succMtx.Unlock()
@@ -312,10 +329,6 @@ func (n *Node) stabilize() {
 	successor.notify(n)
 	*/
 
-	// MY MODIFICATIONS
-	n.updateSuccessorList()
-	// ---------------
-
 	// Must have a successor first prior to running stabilization
 	n.succMtx.RLock()
 	succ := n.successor
@@ -326,11 +339,16 @@ func (n *Node) stabilize() {
 		return
 	}
 
+	// ---- MODIFICATION TO PSEUDOCODE IN PAPER ----
+	n.updateSuccessorList()
+	// ---------------------------------------------
+
 	// TODO: handle when successor fails
 	// Get our successors predecessor
 	x, err := n.GetPredecessorRPC(succ)
 	if err != nil || x == nil {
 		log.Errorf("error invoking GetPredecessorRPC: %s\n", err)
+		n.removeChordClient(succ)
 		return
 	}
 
@@ -422,9 +440,6 @@ func (n *Node) reconcileSuccessorList(succList *chordpb.SuccessorList) {
 
 		// node just joined the chord ring
 		if n.rgFlag == 1 {
-			// first allocate a new replica group for ourselves
-			//id := BytesToUint64(n.Id)
-			//n.rgs[id] = &ReplicaGroup{leaderId:n.Id, data:make(map[string][]byte)}
 			// set oldLeaderId to empty so receiving nodes know a new node has joined
 			oldLeaderId = []byte{}
 			n.rgFlag = 0
@@ -436,7 +451,8 @@ func (n *Node) reconcileSuccessorList(succList *chordpb.SuccessorList) {
 			n.RecvCoordinatorMsgRPC(node, newLeaderId, oldLeaderId)
 		}
 
-		// TODO: transfer data replicas to members of RG
+		// transfer data replicas to replica group
+		n.sendAllReplicas()
 	}
 
 }
@@ -553,7 +569,8 @@ func (n *Node) checkPredecessor() {
 	if err != nil {
 		log.Infof("detected predecessor has failed - %v\n", err)
 
-		// TODO: tranfer data to our RG before deleting it
+		// transfer data to our RG before deleting it
+		n.moveReplicas(BytesToUint64(pred.Id), BytesToUint64(n.Id))
 		// remove membership to RG whose leader is the failed node
 		id := BytesToUint64(pred.Id)
 		n.removeRgMembership(id)
@@ -567,7 +584,13 @@ func (n *Node) checkPredecessor() {
 		for _, node := range  succList {
 			n.RecvCoordinatorMsgRPC(node, n.Id, pred.Id)
 		}
-		// TODO: transfer data replicas to new members of RG
+
+		// TODO: only send new keys?
+		// transfer data replicas to replica group
+		n.sendAllReplicas()
+
+		// remove connection to failed predecessor
+		n.removeChordClient(pred)
 
 		n.predMtx.Lock()
 		n.predecessor = nil
@@ -644,11 +667,15 @@ func (n *Node) put(key string, value []byte) error {
 
 	if bytes.Compare(n.Id, node.Id) == 0 {
 		// key belongs to current node
+
+		// store kv in our datastore
 		myId := BytesToUint64(n.Id)
 		n.rgsMtx.RLock()
 		n.rgs[myId].data[key] = value
 		n.rgsMtx.RUnlock()
 
+		// send kv to our replica group
+		n.sendReplica(key)
 		return nil
 	} else {
 		// key belongs to remote node

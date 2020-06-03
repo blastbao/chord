@@ -14,9 +14,16 @@ service chord {
     rpc CheckPredecessor(empty) returns (empty) {};
     // Get successor list of a node
     rpc GetSuccessorList(empty) returns (SuccessorList) {};
-    // Receive coordinator messages from nodes who are the cooridinators
+    // TODO: consider changing the names of the below RPCs for replicas. They are not very clear
+    // Receive coordinator messages from nodes who are the coordinators
     // for replica groups around the chord ring
     rpc RecvCoordinatorMsg(CoordinatorMsg) returns (empty) {};
+    // Get keys we are responsible for from a node (typically a new node calls this on their successor)
+    rpc GetKeys(PeerID) returns (KVs) {};
+    // Receive replica KV pairs from the leader of the replica group
+    rpc SendReplicas(ReplicaMsg) returns (empty) {};
+    // Remove replica KV pairs
+    rpc RemoveReplicas(ReplicaMsg) returns (empty) {};
     // Get a value
     rpc Get(Key) returns (Value) {};
     // Create a new key-value pair
@@ -42,6 +49,11 @@ message CoordinatorMsg {
     bytes newLeaderId = 2;
 }
 
+message ReplicaMsg {
+    bytes leaderId = 1;
+    repeated KV kv = 2;
+}
+
 message PeerID {
     bytes id = 1;
 }
@@ -57,4 +69,8 @@ message Value {
 message KV {
     string key = 1;
     bytes value = 2;
+}
+
+message KVs {
+    repeated KV kvs = 1;
 }
