@@ -40,6 +40,7 @@ func defaults() map[string]interface{} {
 		"stabilizeinterval":        250,
 		"fixfingerinterval":        50,
 		"checkpredecessorinterval": 150,
+		"logging":					true,
 	}
 }
 

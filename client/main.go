@@ -14,7 +14,7 @@ import (
 
 func GetChordClient(addr string) (chordpb.ChordClient, error) {
 	//ctx, cancel := context.WithTimeout(context.Background(), n.grpcOpts.timeout)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	dialOpts := make([]grpc.DialOption, 0, 5)
@@ -38,7 +38,7 @@ func Get(contact string, key string) (*chordpb.Value, error) {
 
 	req := &chordpb.Key{Key: key}
 
-	ctx, _ := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
 	val, err := cc.Get(ctx, req)
 	return val, err
 }
@@ -52,7 +52,7 @@ func Put(contact string, key string, val []byte) error {
 
 	req := &chordpb.KV{Key: key, Value: val}
 
-	ctx, _ := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
 	_, err = cc.Put(ctx, req)
 	return err
 }
@@ -66,7 +66,7 @@ func Locate(contact string, key string) (*chordpb.Node, error) {
 
 	req := &chordpb.Key{Key: key}
 
-	ctx, _ := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
 	node, err := cc.Locate(ctx, req)
 	return node, err
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/cdesiniotis/chord/chordpb"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"io/ioutil"
 	"net"
 	"os"
 	"os/signal"
@@ -155,25 +156,31 @@ func newNode(config *Config) *Node {
 	}()
 
 	// Thread 3: Debug
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		for {
-			select {
-			case <-ticker.C:
-				log.Printf("------------\n")
-				PrintNode(n.Node, false, "Self")
-				PrintNode(n.predecessor, false, "Predecessor")
-				PrintNode(n.successor, false, "Successor")
-				PrintSuccessorList(n)
-				PrintReplicaGroupMembership(n)
-				n.PrintFingerTable(false)
-				log.Printf("------------\n")
-			case <-n.shutdownCh:
-				ticker.Stop()
-				return
+	// Check config to check if logging is disabled
+	if config.Logging == false {
+		log.SetOutput(ioutil.Discard)
+	} else {
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			for {
+				select {
+				case <-ticker.C:
+					log.Printf("------------\n")
+					PrintNode(n.Node, false, "Self")
+					PrintNode(n.predecessor, false, "Predecessor")
+					PrintNode(n.successor, false, "Successor")
+					PrintSuccessorList(n)
+					PrintReplicaGroupMembership(n)
+					n.PrintFingerTable(false)
+					log.Printf("------------\n")
+				case <-n.shutdownCh:
+					ticker.Stop()
+					return
+				}
 			}
-		}
-	}()
+		}()
+	}
+
 
 	// Thread 4: Stabilization protocol
 	go func() {
