@@ -1,6 +1,7 @@
 package chord
 
 import (
+	"bytes"
 	"github.com/cdesiniotis/chord/chordpb"
 	log "github.com/sirupsen/logrus"
 	"math"
@@ -103,6 +104,9 @@ func (n *Node) sendReplica(key string) {
 	succList := n.successorList
 	n.succListMtx.RUnlock()
 	for _, node := range succList {
+		if bytes.Equal(node.Id, n.Id) {
+			continue
+		}
 		n.SendReplicasRPC(node,replicaMsg)
 	}
 }
@@ -133,6 +137,9 @@ func (n *Node) sendAllReplicas() {
 	succList := n.successorList
 	n.succListMtx.RUnlock()
 	for _, node := range succList {
+		if bytes.Equal(node.Id, n.Id) {
+			continue
+		}
 		n.SendReplicasRPC(node,replicaMsg)
 	}
 }
