@@ -8,6 +8,7 @@ import (
 	"github.com/cdesiniotis/chord/chordpb"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 	"time"
 )
@@ -71,8 +72,33 @@ func Locate(contact string, key string) (*chordpb.Node, error) {
 	return node, err
 }
 
+func readConfig(filename string, defaults map[string]interface{}) (*viper.Viper, error) {
+	v := viper.New()
+	for key, value := range defaults {
+		v.SetDefault(key, value)
+	}
+	v.SetConfigName(filename) // name of config file without extensions
+	v.AddConfigPath(".")
+	v.AddConfigPath("./client")
+	v.AutomaticEnv()
+	err := v.ReadInConfig()
+	return v, err
+}
+
+func defaults() map[string]interface{} {
+	return map[string]interface{}{
+		"addr":	"0.0.0.0:8001",
+	}
+}
+
 func main() {
-	contact := "0.0.0.0:8002"
+	// read config file
+	v, err := readConfig("config", defaults())
+	if err != nil {
+		log.Fatalf("error when reading config: %v\n", err)
+	}
+	contact := v.GetString("addr")
+
 	var cmdPut = &cobra.Command{
 		Use:   "put [key] [value]",
 		Short: "Put a key-value pair into the dht",
@@ -100,7 +126,7 @@ func main() {
 			if err != nil {
 				log.Fatalf("error calling Get(k): %s\n", err)
 			}
-			log.Infof("dht[%s] = %s", key, string(val.Value))
+			log.Infof("%s --> %s", key, string(val.Value))
 		},
 	}
 
