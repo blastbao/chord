@@ -1,6 +1,8 @@
 package chord
 
-import "google.golang.org/grpc"
+import (
+	"google.golang.org/grpc"
+)
 
 type Config struct {
 	KeySize int
@@ -14,6 +16,10 @@ type Config struct {
 	StabilizeInterval        int // in ms
 	FixFingerInterval        int // in ms
 	CheckPredecessorInterval int // in ms
+
+	SuccessorListSize int
+
+	Logging 	bool
 }
 
 func DefaultConfig(addr string, port int) *Config {
@@ -24,12 +30,14 @@ func DefaultConfig(addr string, port int) *Config {
 		KeySize:                  8,
 		Addr:                     addr,
 		Port:                     uint32(port),
-		Timeout:                  2000,
+		Timeout:                  5000,
 		DialOpts:                 dialOpts,
 		ServerOpts:               serverOpts,
 		StabilizeInterval:        250,
 		FixFingerInterval:        50,
 		CheckPredecessorInterval: 150,
+		SuccessorListSize:        2,
+		Logging:				  true,
 	}
 }
 

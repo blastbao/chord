@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
+	"fmt"
 	"github.com/cdesiniotis/chord/chordpb"
 	log "github.com/sirupsen/logrus"
 	"math"
+	"math/big"
 	"strconv"
 )
 
@@ -95,6 +97,20 @@ func Between(key, a, b []byte) bool {
 	return false
 }
 
+/* Function:	Contains
+ *
+ * Description:
+ *		Returns true if node is in list.
+ */
+func Contains(list []*chordpb.Node, node *chordpb.Node) bool {
+	for _, n := range list {
+		if bytes.Equal(n.Id, node.Id) {
+			return true
+		}
+	}
+	return false
+}
+
 /* Function:	PrintNode
  *
  * Description:
@@ -114,4 +130,55 @@ func PrintNode(n *chordpb.Node, hex bool, label string) {
 		log.Infof("%s - {id: %d\t addr: %s\t port: %d}\n", label, n.Id, n.Addr, n.Port)
 	}
 
+}
+
+/* Function:	PrintSuccessorList
+ *
+ * Description:
+ *		Print out a node's successor list
+ *
+ */
+func PrintSuccessorList(n *Node) {
+	n.succListMtx.RLock()
+	defer n.succListMtx.RUnlock()
+
+	for i, node := range n.successorList {
+		PrintNode(node, false, fmt.Sprintf("Successor %d", i))
+	}
+}
+
+func PrintReplicaGroupMembership(n *Node) {
+	n.rgsMtx.RLock()
+	defer n.rgsMtx.RUnlock()
+
+	log.Infof("------Replica Group Membership------\n")
+	for id, _ := range n.rgs {
+		log.Infof("RG Leader ID: %d\t RG data: %v\n", id, n.rgs[id].data)
+	}
+}
+
+func BytesToUint64(b []byte) uint64 {
+	temp := big.Int{}
+	return temp.SetBytes(b).Uint64()
+}
+
+func Uint64ToBytes(i uint64) []byte {
+	temp := big.Int{}
+	return temp.SetUint64(i).Bytes()
+}
+
+func Distance(a, b uint64, n int) uint64 {
+	sub := float64(a-b)
+	_n := float64(n)
+	return uint64(math.Min(math.Abs(sub), float64(_n-math.Abs(sub))))
+}
+
+// returns true if same, false if different
+func CompareSuccessorLists(a, b []*chordpb.Node) bool {
+	for i, _ := range a {
+		if !bytes.Equal(a[i].Id, b[i].Id) {
+			return false
+		}
+	}
+	return true
 }

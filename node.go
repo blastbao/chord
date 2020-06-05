@@ -6,6 +6,7 @@ import (
 	"github.com/cdesiniotis/chord/chordpb"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"io/ioutil"
 	"net"
 	"os"
 	"os/signal"
@@ -27,6 +28,9 @@ type Node struct {
 	successor *chordpb.Node
 	succMtx   sync.RWMutex
 
+	successorList []*chordpb.Node
+	succListMtx   sync.RWMutex
+
 	fingerTable fingerTable
 	ftMtx       sync.RWMutex
 
@@ -37,8 +41,9 @@ type Node struct {
 	connPool    map[string]*clientConn
 	connPoolMtx sync.RWMutex
 
-	data    map[string][]byte
-	dataMtx sync.RWMutex
+	rgs 	map[uint64]*ReplicaGroup
+	rgsMtx	sync.RWMutex
+	rgFlag	int		// set to 1 initially, 0 after node sends its first Coordinator Msg
 
 	signalChannel chan os.Signal
 	shutdownCh    chan struct{}
@@ -92,14 +97,16 @@ func newNode(config *Config) *Node {
 
 	// Initialize some attributes
 	n := &Node{
-		Node:     &chordpb.Node{Addr: config.Addr, Port: config.Port},
-		config:   config,
-		connPool: make(map[string]*clientConn),
+		Node:          &chordpb.Node{Addr: config.Addr, Port: config.Port},
+		config:        config,
+		successorList: make([]*chordpb.Node, config.SuccessorListSize),
+		connPool:      make(map[string]*clientConn),
 		grpcOpts: grpcOpts{
 			serverOpts: config.ServerOpts,
 			dialOpts:   config.DialOpts,
 			timeout:    time.Duration(config.Timeout) * time.Millisecond},
-		data:          make(map[string][]byte),
+		rgs:		make(map[uint64]*ReplicaGroup),
+		rgFlag: 	1,
 		shutdownCh:    make(chan struct{}),
 		signalChannel: make(chan os.Signal, 1),
 	}
@@ -110,6 +117,10 @@ func newNode(config *Config) *Node {
 
 	// Create new finger table
 	n.fingerTable = NewFingerTable(n, config.KeySize)
+
+	// Allocate a RG for us
+	id := BytesToUint64(n.Id)
+	n.rgs[id] = &ReplicaGroup{leaderId:n.Id, data:make(map[string][]byte)}
 
 	// Create a listening socket for the chord grpc server
 	lis, err := net.Listen("tcp", key)
@@ -145,23 +156,31 @@ func newNode(config *Config) *Node {
 	}()
 
 	// Thread 3: Debug
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		for {
-			select {
-			case <-ticker.C:
-				log.Printf("------------\n")
-				PrintNode(n.Node, false, "Self")
-				PrintNode(n.predecessor, false, "Predecessor")
-				PrintNode(n.successor, false, "Successor")
-				n.PrintFingerTable(false)
-				log.Printf("------------\n")
-			case <-n.shutdownCh:
-				ticker.Stop()
-				return
+	// Check config to check if logging is disabled
+	if config.Logging == false {
+		log.SetOutput(ioutil.Discard)
+	} else {
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			for {
+				select {
+				case <-ticker.C:
+					log.Printf("------------\n")
+					PrintNode(n.Node, false, "Self")
+					PrintNode(n.predecessor, false, "Predecessor")
+					PrintNode(n.successor, false, "Successor")
+					PrintSuccessorList(n)
+					PrintReplicaGroupMembership(n)
+					n.PrintFingerTable(false)
+					log.Printf("------------\n")
+				case <-n.shutdownCh:
+					ticker.Stop()
+					return
+				}
 			}
-		}
-	}()
+		}()
+	}
+
 
 	// Thread 4: Stabilization protocol
 	go func() {
@@ -169,6 +188,7 @@ func newNode(config *Config) *Node {
 		for {
 			select {
 			case <-ticker.C:
+
 				n.stabilize()
 			case <-n.shutdownCh:
 				ticker.Stop()
@@ -250,6 +270,8 @@ func (n *Node) create() {
 	n.succMtx.Lock()
 	n.successor = n.Node
 	n.succMtx.Unlock()
+
+	n.initSuccessorList()
 }
 
 /*
@@ -271,9 +293,28 @@ func (n *Node) join(other *chordpb.Node) error {
 		return err
 	}
 
+	// Get keys from successor that we are now responsible for
+	kvs, err := n.GetKeysRPC(succ, n.Id)
+	if err != nil {
+		log.Errorf("error callling GetKeysRPC(): %v\n", err)
+		return err
+	}
+
+	// Add keys to our replica group
+	// On the first call to stabilize() we will initiate a leader election
+	// and notify our successor list that we are the new leader
+	ourId := BytesToUint64(n.Id)
+	n.rgsMtx.Lock()
+	for _, kv := range kvs.Kvs {
+		n.rgs[ourId].data[kv.Key] = kv.Value
+	}
+	n.rgsMtx.Unlock()
+
 	n.succMtx.Lock()
 	n.successor = succ
 	n.succMtx.Unlock()
+
+	n.initSuccessorList()
 
 	return nil
 }
@@ -305,11 +346,16 @@ func (n *Node) stabilize() {
 		return
 	}
 
+	// ---- MODIFICATION TO PSEUDOCODE IN PAPER ----
+	n.updateSuccessorList()
+	// ---------------------------------------------
+
 	// TODO: handle when successor fails
 	// Get our successors predecessor
 	x, err := n.GetPredecessorRPC(succ)
 	if err != nil || x == nil {
 		log.Errorf("error invoking GetPredecessorRPC: %s\n", err)
+		n.removeChordClient(succ)
 		return
 	}
 
@@ -331,12 +377,101 @@ func (n *Node) stabilize() {
 }
 
 /*
+ * Function:	updateSuccessorList
+ *
+ * Description:
+ *		An addition to the Chord stabilization protocol. Update the successor list
+ * 		periodically. If n notices its successor has failed, it will replace
+ * 		its successor with the next entry in the successor list and reconcile its
+ * 		list with its new successor.
+ */
+func (n *Node) updateSuccessorList() {
+	var succ *chordpb.Node
+
+	index := 0
+	for index < n.config.SuccessorListSize {
+		n.succMtx.RLock()
+		succ = n.successor
+		n.succMtx.RUnlock()
+
+		succList, err := n.GetSuccessorListRPC(succ)
+		if err != nil {
+			log.Errorf("successor failed while calling GetSuccessorListRPC: %v\n", err)
+			// update successor the next entry in successor table
+			if index == n.config.SuccessorListSize - 1 {
+				break
+			}
+			n.succMtx.Lock()
+			n.succListMtx.RLock()
+			n.successor = n.successorList[index+1]
+			n.succListMtx.RUnlock()
+			n.succMtx.Unlock()
+			index++
+		} else {
+			n.reconcileSuccessorList(succList)
+			break
+		}
+	}
+
+}
+
+/*
+ * Function:	reconcileSuccessorList
+ *
+ * Description:
+ *		Node n reconciles its list with successor s by copying s's list,
+ * 		removing the last element, and prepending s to it.
+ */
+func (n *Node) reconcileSuccessorList(succList *chordpb.SuccessorList) {
+	n.succMtx.RLock()
+	succ := n.successor
+	currList := n.successorList
+	n.succMtx.RUnlock()
+
+	// Remove succList's last element
+	newList := succList.Successors
+	copy(newList[1:], newList)
+	// Prepend our successor to the list
+	newList[0] = succ
+
+	// Update our successor list
+	n.succListMtx.Lock()
+	n.successorList = newList
+	n.succListMtx.Unlock()
+
+	// If successor list changed, initiate leader election
+	same := CompareSuccessorLists(currList, newList)
+	if !same {
+		newLeaderId := n.Id
+		oldLeaderId := newLeaderId
+
+		// node just joined the chord ring
+		if n.rgFlag == 1 {
+			// set oldLeaderId to empty so receiving nodes know a new node has joined
+			oldLeaderId = []byte{}
+			n.rgFlag = 0
+		}
+
+		// Send coordinator messages to all successors (members of the replica group)
+		log.Infof("In reconcileSuccessorList() - sending coordinator msg: new %d\t old: %d\n", newLeaderId, oldLeaderId)
+		for _, node := range newList {
+			n.RecvCoordinatorMsgRPC(node, newLeaderId, oldLeaderId)
+		}
+
+		// transfer data replicas to replica group
+		n.sendAllReplicas()
+	}
+
+}
+
+/*
  * Function:	findSuccessor
  *
  * Description:
  *		Find the successor node for the given id. First check if id ∈ (n, successor].
  *		If this is not the case then forward the request to the closest preceding node.
  */
+// TODO: come back to this after implementing replica groups
 func (n *Node) findSuccessor(id []byte) (*chordpb.Node, error) {
 	n.succMtx.RLock()
 	succ := n.successor
@@ -345,11 +480,21 @@ func (n *Node) findSuccessor(id []byte) (*chordpb.Node, error) {
 	if BetweenRightIncl(id, n.Id, succ.Id) {
 		return succ, nil
 	} else {
-		n2 := n.closestPrecedingNode(id)
+		exclude := []*chordpb.Node{}
+		n2 := n.closestPrecedingNode(id, exclude...)
 		res, err := n.FindSuccessorRPC(n2, id)
+
+		// if FindSuccessorRPC timeouts, try next best predecessor
+		if err != nil {
+			exclude = append(exclude, n2)
+			n2 = n.closestPrecedingNode(id, exclude...)
+			res, err = n.FindSuccessorRPC(n2, id)
+		}
+
 		if err != nil {
 			return nil, err
 		}
+
 		return res, nil
 	}
 }
@@ -359,18 +504,57 @@ func (n *Node) findSuccessor(id []byte) (*chordpb.Node, error) {
  *
  * Description:
  *		Check finger table and find closest preceding node for a given id.
+ * 		Check both the finger table and successor list. Do not return the node
+ * 		if it is in the list "exclude"
  */
-func (n *Node) closestPrecedingNode(id []byte) *chordpb.Node {
-	n.ftMtx.RLock()
-	defer n.ftMtx.RUnlock()
+func (n *Node) closestPrecedingNode(id []byte, exclude ...*chordpb.Node) *chordpb.Node {
+	var ftNode *chordpb.Node
+	var succListNode *chordpb.Node
 
+	// Look in finger table
+	n.ftMtx.RLock()
 	for i := len(id) - 1; i >= 0; i-- {
-		if Between(n.fingerTable[i].Id, n.Id, id) {
-			ret := n.fingerTable[i].Node
-			return ret
+		ftEntry := n.fingerTable[i]
+		if Contains(exclude, ftEntry.Node) {
+			continue
+		}
+		if Between(ftEntry.Id, n.Id, id) {
+			ftNode = n.fingerTable[i].Node
+			break
 		}
 	}
-	return n.Node
+	n.ftMtx.RUnlock()
+
+	// Look in successor list
+	n.succListMtx.RLock()
+	for i := n.config.SuccessorListSize - 1; i >= 0; i--{
+		succListEntry := n.successorList[i]
+		if Contains(exclude, succListEntry) {
+			continue
+		}
+		if Between(succListEntry.Id, n.Id, id) {
+			succListNode = n.successorList[i]
+			break
+		}
+	}
+	n.succListMtx.RUnlock()
+
+	// Check if no node was found in either of the lists
+	if ftNode == nil && succListNode == nil {
+		return n.Node
+	} else if ftNode == nil {
+		return succListNode
+	} else if succListNode == nil {
+		return ftNode
+	}
+
+	// See which node is closer to id
+	if Between(ftNode.Id, succListNode.Id, id) {
+		return ftNode
+	} else {
+		return succListNode
+	}
+
 }
 
 /*
@@ -390,11 +574,50 @@ func (n *Node) checkPredecessor() {
 
 	_, err := n.CheckPredecessorRPC(pred)
 	if err != nil {
-		log.Infof("detected predecessor has failed\n")
+		log.Infof("detected predecessor has failed - %v\n", err)
+
+		// transfer data to our RG before deleting it
+		n.moveReplicas(BytesToUint64(pred.Id), BytesToUint64(n.Id))
+		// remove membership to RG whose leader is the failed node
+		id := BytesToUint64(pred.Id)
+		n.removeRgMembership(id)
+
+		// initiate new leader election
+		n.succListMtx.RLock()
+		succList := n.successorList
+		n.succListMtx.RUnlock()
+		// send coordinator msg to all
+		log.Infof("In checkPredecessor() - sending coordinator msg: new %d\t old: %d\n", n.Id, pred.Id)
+		for _, node := range  succList {
+			n.RecvCoordinatorMsgRPC(node, n.Id, pred.Id)
+		}
+
+		// TODO: only send new keys?
+		// transfer data replicas to replica group
+		n.sendAllReplicas()
+
+		// remove connection to failed predecessor
+		n.removeChordClient(pred)
+
 		n.predMtx.Lock()
 		n.predecessor = nil
 		n.predMtx.Unlock()
 	}
+}
+
+/*
+ * Function:	initSuccessorList
+ *
+ * Description:
+ *		Initialize values of successor list to current successor. Only
+ * 		used by creator of chord ring.
+ */
+func (n *Node) initSuccessorList() {
+	n.succMtx.Lock()
+	for i, _ := range n.successorList {
+		n.successorList[i] = n.successor
+	}
+	n.succMtx.Unlock()
 }
 
 /*
@@ -413,9 +636,10 @@ func (n *Node) get(key string) ([]byte, error) {
 
 	if bytes.Compare(n.Id, node.Id) == 0 {
 		// key is stored at current node
-		n.dataMtx.RLock()
-		val, ok := n.data[key]
-		n.dataMtx.RUnlock()
+		myId := BytesToUint64(n.Id)
+		n.rgsMtx.RLock()
+		val, ok := n.rgs[myId].data[key]
+		n.rgsMtx.RUnlock()
 
 		if !ok {
 			return nil, errors.New("key does not exist in datastore")
@@ -450,9 +674,15 @@ func (n *Node) put(key string, value []byte) error {
 
 	if bytes.Compare(n.Id, node.Id) == 0 {
 		// key belongs to current node
-		n.dataMtx.Lock()
-		n.data[key] = value
-		n.dataMtx.Unlock()
+
+		// store kv in our datastore
+		myId := BytesToUint64(n.Id)
+		n.rgsMtx.RLock()
+		n.rgs[myId].data[key] = value
+		n.rgsMtx.RUnlock()
+
+		// send kv to our replica group
+		n.sendReplica(key)
 		return nil
 	} else {
 		// key belongs to remote node

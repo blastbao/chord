@@ -26,6 +26,7 @@ func readConfig(filename string, defaults map[string]interface{}) (*viper.Viper,
 	}
 	v.SetConfigName(filename) // name of config file without extensions
 	v.AddConfigPath(".")
+	v.AddConfigPath("./server")
 	v.AutomaticEnv()
 	err := v.ReadInConfig()
 	return v, err
@@ -40,6 +41,8 @@ func defaults() map[string]interface{} {
 		"stabilizeinterval":        250,
 		"fixfingerinterval":        50,
 		"checkpredecessorinterval": 150,
+		"successorlistsize":		2,
+		"logging":					true,
 	}
 }
 
