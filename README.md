@@ -1,5 +1,7 @@
 # Chord DHT
-A distributed hash table using the Chord lookup protocol.
+A distributed hash table using the Chord lookup protocol, implemented in Go.
+
+A demo can be found [here](https://youtu.be/Ym0kmfGoK8k)
 
 ## Goals
 - Implement a functioning DHT
