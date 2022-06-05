@@ -22,6 +22,7 @@ type fingerEntry struct {
 func NewFingerTable(n *Node, m int) fingerTable {
 	ft := make([]*fingerEntry, m)
 
+	// 节点 n 的路由表由 m 个路由项构成。
 	n.ftMtx.Lock()
 	for i := range ft {
 		ft[i] = newFingerEntry(fingerMath(n.Id, i, m), n.Node)
@@ -50,15 +51,19 @@ func newFingerEntry(id []byte, n *chordpb.Node) *fingerEntry {
  *		(n+2^i)mod(2^m)
  */
 func fingerMath(n []byte, i int, m int) []byte {
+	// 计算 2^i
 	x := big.NewInt(2)
 	x.Exp(x, big.NewInt(int64(i)), nil)
 
+	// 计算 2^m
 	y := big.NewInt(2)
 	y.Exp(y, big.NewInt(int64(m)), nil)
 
+	// 计算 (n + 2^i) mod 2^m
 	res := &big.Int{}
 	res.SetBytes(n).Add(res, x).Mod(res, y)
 
+	// 返回
 	return res.Bytes()
 }
 
@@ -68,11 +73,16 @@ func fingerMath(n []byte, i int, m int) []byte {
  * 		Fix a finger table entry if it is no longer correct.
  */
 func (n *Node) fixFinger(next int) {
+	// 计算节点 n 的第 next 个路由项的 CID
 	nextID := fingerMath(n.Id, next, n.config.KeySize)
+
+	// 查找路由表中距离 CID 最近的首个后继节点
 	succ, err := n.findSuccessor(nextID)
 	if err != nil {
 		return
 	}
+
+	// 更新 nextID 路由项对应的 succ
 	newEntry := newFingerEntry(nextID, succ)
 	n.ftMtx.Lock()
 	n.fingerTable[next] = newEntry

@@ -28,10 +28,14 @@ type clientConn struct {
  *		Returns a client necessary to make a chord grpc call.
  * 		Adds the client to the node's connection pool.
  */
+//
+// 获取同 other 的 grpc client
 func (n *Node) getChordClient(other *chordpb.Node) (chordpb.ChordClient, error) {
 
+	// 目标节点的地址
 	target := other.Addr + ":" + strconv.Itoa(int(other.Port))
 
+	// 连接池，grpc 可以复用连接
 	n.connPoolMtx.RLock()
 	cc, ok := n.connPool[target]
 	n.connPoolMtx.RUnlock()
@@ -39,6 +43,7 @@ func (n *Node) getChordClient(other *chordpb.Node) (chordpb.ChordClient, error) 
 		return cc.client, nil
 	}
 
+	// 新建 grpc connection
 	ctx, cancel := context.WithTimeout(context.Background(), n.grpcOpts.timeout)
 	defer cancel()
 
@@ -48,7 +53,10 @@ func (n *Node) getChordClient(other *chordpb.Node) (chordpb.ChordClient, error) 
 		return nil, err
 	}
 
+	// 封装 grpc client
 	client := chordpb.NewChordClient(conn)
+
+	// 保存到连接池
 	cc = &clientConn{client, conn}
 	n.connPoolMtx.Lock()
 	defer n.connPoolMtx.Unlock()
@@ -266,6 +274,8 @@ func (n *Node) LocateRPC(other *chordpb.Node, key string) (*chordpb.Node, error)
  * 		If peerID is between our id and our successor's id, then return our successor.
  * 		Otherwise, check our finger table and forward the request to the closest preceding node.
  */
+//
+// [重要] 查找 peerID 的后继，递归查询，不断转发。类似 DNS 。
 func (n *Node) FindSuccessor(context context.Context, peerID *chordpb.PeerID) (*chordpb.Node, error) {
 	return n.findSuccessor(peerID.Id)
 }
@@ -275,6 +285,8 @@ func (n *Node) FindSuccessor(context context.Context, peerID *chordpb.PeerID) (*
  * Description:
  * 		Implementation of GetPredecessor RPC. Returns the node's current predecessor
  */
+//
+// 获取前驱。
 func (n *Node) GetPredecessor(context context.Context, empty *chordpb.Empty) (*chordpb.Node, error) {
 	n.predMtx.RLock()
 	defer n.predMtx.RUnlock()
@@ -291,14 +303,18 @@ func (n *Node) GetPredecessor(context context.Context, empty *chordpb.Empty) (*c
  * 		Implementation of Notify RPC. A Node is notifying us that it believes it is our predecessor.
  * 		Check if this is true based on our predecessor/successor knowledge and update.
  */
+//
+// 当其它节点通知自己，其为自己的前驱，那么需要更新本节点的 pred 。
 func (n *Node) Notify(context context.Context, node *chordpb.Node) (*chordpb.Empty, error) {
 	n.predMtx.Lock()
 	defer n.predMtx.Unlock()
 
+	// [重要] 检查 node.Id 位于 <pred, curr> 之间，其才是合法的最近前驱。
 	if n.predecessor == nil || Between(node.Id, n.predecessor.Id, n.Id) {
 		log.Infof("Notify(): Updating predecessor to: %v\n", node)
 		n.predecessor = node
 	}
+
 	return &chordpb.Empty{}, nil
 }
 
@@ -317,6 +333,7 @@ func (n *Node) CheckPredecessor(context context.Context, empty *chordpb.Empty) (
  * Description:
  *		Return a node's successor list
  */
+// 返回字节的后继列表。
 func (n *Node) GetSuccessorList(context context.Context, empty *chordpb.Empty) (*chordpb.SuccessorList, error) {
 	n.succListMtx.RLock()
 	defer n.succListMtx.RUnlock()
@@ -333,18 +350,31 @@ func (n *Node) GetSuccessorList(context context.Context, empty *chordpb.Empty) (
  * 		like creating a new replica group object internally, removing replica groups we are
  * 		no longer a member of etc.
  */
+
+// RecvCoordinatorMsg
+//
+// 这是领导者选举的 Bully 算法的一种修改形式。
+//
+// 当我们收到另一个节点的协调消息时，意味着我们是其 successor list 中的成员。
+// 我们应该立即认识到自己是其复制组的一部分，并采取必要的行动，如:
+//	- 创建一个新的 replica group
+//  - 删除一个旧的 replica group
+//
 func (n *Node) RecvCoordinatorMsg(context context.Context, msg *chordpb.CoordinatorMsg) (*chordpb.Empty, error) {
 
+	// 如果自己是 leader ，忽略。
 	if bytes.Equal(n.Id, msg.NewLeaderId) {
 		return &chordpb.Empty{}, nil
 	}
 
 	log.Infof("ReceivedCoordinatorMsg(): newLeaderID: %d\t oldLeaderID: %d\n", msg.NewLeaderId, msg.OldLeaderId)
 
+	// 如果旧 leader 不存在
 	if len(msg.OldLeaderId) == 0 {
 		// New node has joined chord ring
 
 		// Check if this is a duplicate message
+		// 检查新 leader 是否已经存在
 		n.rgsMtx.RLock()
 		_, ok := n.rgs[BytesToUint64(msg.NewLeaderId)]
 		if ok {
@@ -353,21 +383,38 @@ func (n *Node) RecvCoordinatorMsg(context context.Context, msg *chordpb.Coordina
 		}
 		n.rgsMtx.RUnlock()
 
+
 		// Remove farthest RG membership
+		//
+		// 检查 n.rgs 是否超过限制，若超过需要移除一个，腾个空间。
 		n.removeFarthestRgMembership()
 
 		// Add new RG
+		//
+		// 添加副本
 		newLeaderId := BytesToUint64(msg.NewLeaderId)
 		n.addRgMembership(newLeaderId)
+
 
 		// If newleader should be our predecessor, or is already our predecessor,
 		// remove keys we are not responsible for anymore.
 		// This new node already requested these keys from us when it joined the chord ring.
+		//
+		// 如果 newleader 应该是我们的前任，或者已经是我们的前任，则删除我们不再负责的键。
+		// 这个新节点在加入和弦环时已经向我们请求了这些键。
+		//
 		n.predMtx.RLock()
+
 		if n.predecessor == nil || Between(msg.NewLeaderId, n.predecessor.Id, n.Id) || bytes.Equal(msg.NewLeaderId, n.predecessor.Id) {
+
 			// remove keys we aren't responsible for anymore
+			//
+			// 因为 leader 是我们的 pred ，所以位于 <pred, curr> 之间的 key 不归我们负责，需要删除他们。
 			kvs := n.removeKeys(n.Id, msg.NewLeaderId)
+
 			// remove these keys from our replica group
+			//
+			// 这些 kv 需要从自己的 replicas 中移除
 			n.succListMtx.RLock()
 			succList := n.successorList
 			n.succListMtx.RUnlock()
@@ -375,9 +422,11 @@ func (n *Node) RecvCoordinatorMsg(context context.Context, msg *chordpb.Coordina
 				n.RemoveReplicasRPC(node, &chordpb.ReplicaMsg{LeaderId:n.Id, Kv:kvs})
 			}
 		}
+
+
 		n.predMtx.RUnlock()
 
-
+	// 如果旧 leader 存在
 	} else {
 
 		newLeaderId := BytesToUint64(msg.NewLeaderId)
@@ -424,16 +473,19 @@ func (n *Node) GetKeys(context context.Context, id *chordpb.PeerID) (*chordpb.KV
 	defer n.rgsMtx.RUnlock()
 
 	ourId := BytesToUint64(n.Id)
+
+	// 本地数据为空，直接返回。
 	if len(n.rgs[ourId].data) == 0 {
 		return &chordpb.KVs{}, nil
 	}
-	kvs := make([]*chordpb.KV, 0)
 
+	// [重要][数据迁移] 把本地数据中，那些 hash(key) 位于 (~, peer) 区间的 keys 返回给他，其余 <peer, curr> 区间的 keys 保留在本地。
+	kvs := make([]*chordpb.KV, 0)
 	var hash []byte
 	for k, v := range n.rgs[ourId].data {
 		hash = GetPeerID(k, n.config.KeySize)
 		// TODO: ensure this only sends the necessary keys at all times
-		if !BetweenRightIncl(hash, id.Id, n.Id){
+		if !BetweenRightIncl(hash, id.Id, n.Id) {
 			kvs = append(kvs, &chordpb.KV{Key:k, Value:v})
 		}
 	}
@@ -446,18 +498,21 @@ func (n *Node) GetKeys(context context.Context, id *chordpb.PeerID) (*chordpb.KV
  * 		Implementation of SendReplicas RPC. A leader is sending us kv replicas. Add them to the leaders
  * 		replica group internally.
  */
+//
+// 当某个 leader 发送 kvs 给本机，需要将数据保存到本地存储中。
 func (n *Node) SendReplicas(context context.Context, replicaMsg *chordpb.ReplicaMsg) (*chordpb.Empty, error) {
-	leaderId := BytesToUint64(replicaMsg.LeaderId)
 
+	// 检查 leader 是否存在，若存在，意味者本机是一个副本。
+	leaderId := BytesToUint64(replicaMsg.LeaderId)
 	n.rgsMtx.RLock()
 	_ , ok := n.rgs[leaderId]
 	n.rgsMtx.RUnlock()
-
 	if !ok {
 		log.Errorf("SendReplicas() for leaderId %d, but not currently apart of this replica group\n", leaderId)
 		return &chordpb.Empty{}, errors.New("node is not in replica group")
 	}
 
+	// 把 leader 发来的副本数据保存到本地
 	n.rgsMtx.Lock()
 	defer n.rgsMtx.Unlock()
 	for _ ,kv := range replicaMsg.Kv {

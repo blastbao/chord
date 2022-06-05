@@ -14,6 +14,7 @@ func Create(cfg *chord.Config) error {
 	return nil
 }
 
+// Join 加入网络，ip:addr 为 boost 节点
 func Join(cfg *chord.Config, ip string, port int) error {
 	_, err := chord.JoinChord(cfg, ip, port)
 	return err
@@ -78,6 +79,7 @@ func main() {
 		},
 	}
 
+	// 加入 Chord 网络
 	var cmdJoin = &cobra.Command{
 		Use:   "join [ip] [port]",
 		Short: "Join an existing chord dht ring",

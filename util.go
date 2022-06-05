@@ -35,15 +35,21 @@ func GetHash(key string) []byte {
  * 		to m bits. There are 2^m -1 possible peer IDs.
  * 		m must be a multiple of 8.
  */
+//
+//
 func GetPeerID(key string, m int) []byte {
 
 	if m%8 != 0 {
 		log.Fatalf("GetPeerID(): m is not a multiple of 8\n")
 	}
 
+	// sha1(key)
 	hash := GetHash(key)
+
+	// []byte => string
 	str := hex.EncodeToString(hash)
 
+	// cut off
 	numHexChars := m / 4
 	var id []byte
 	err := error(nil)

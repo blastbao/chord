@@ -17,12 +17,14 @@ func (n *Node) addRgMembership(id uint64) {
 	n.rgsMtx.Lock()
 	defer n.rgsMtx.Unlock()
 
+	// 已存在，忽略
 	_, ok := n.rgs[id]
 	if ok {
 		log.Errorf("addRgMembership(id) - RG for id already exists\n")
 		return
 	}
 
+	// 初始化
 	n.rgs[id] = &ReplicaGroup{leaderId:Uint64ToBytes(id)}
 	n.rgs[id].data = make(map[string][]byte)
 	return
@@ -38,13 +40,18 @@ func (n *Node) removeRgMembership(id uint64) {
 	n.rgsMtx.Unlock()
 }
 
+// n.rgs 是有上限的，数目为 n.config.SuccessorListSize 。
+//
+// 如果 len(n.rgs) 超过限制，需要移除 n.rgs 中距离本机最远的那个节点对应的副本数据。
 func (n *Node) removeFarthestRgMembership() {
 	log.Infof("removeFarthestRgMembership()\n")
 	n.rgsMtx.RLock()
 	numRgs := len(n.rgs)
 	n.rgsMtx.RUnlock()
+
 	// Do not remove membership if we are not a part of the max
 	// number of replica groups allowed -> len(successorList) + 1
+	//
 	if numRgs < (n.config.SuccessorListSize + 1) {
 		log.Infof("inside removeFarthestRgMembership - exiting since numRgs = %d\n", numRgs)
 		return
@@ -59,7 +66,10 @@ func (n *Node) getFarthestRgMembership() uint64 {
 	log.Infof("getFarthestRgMembership()\n")
 	n.rgsMtx.RLock()
 	defer n.rgsMtx.RUnlock()
+
 	// get ids for replica groups we are apart of
+	//
+	// 获取所有 replica groups 的 keys(leader node id) 和 count
 	keys := make([]uint64, len(n.rgs))
 	i := 0
 	for k := range n.rgs {
@@ -71,8 +81,9 @@ func (n *Node) getFarthestRgMembership() uint64 {
 	ourId := BytesToUint64(n.Id)
 	m := int(math.Pow(2.0, float64(n.config.KeySize)))
 
+	// 计算当前节点 curr 和 replica groups 中每个节点的距离，从而得到最大距离 maxDist 以及对应的 leader id （farthestId）。
 	for _, id := range keys {
-		dist = Distance(ourId, id, m)
+		dist = Distance(ourId, id, m)// 计算距离
 		if dist > maxDist {
 			maxDist = dist
 			farthestId = id
@@ -195,6 +206,8 @@ func (n *Node) moveKeys(fromId []byte, toId []byte) []*chordpb.KV {
 }
 
 // Remove keys from fromId's replica group, if toId is responsible for them
+//
+//
 func (n *Node) removeKeys(fromId []byte, toId []byte) []*chordpb.KV {
 	fromId_uint := BytesToUint64(fromId)
 
@@ -204,6 +217,9 @@ func (n *Node) removeKeys(fromId []byte, toId []byte) []*chordpb.KV {
 	var hash []byte
 	kvs := make([]*chordpb.KV, 0)
 	for k, v := range n.rgs[fromId_uint].data {
+
+		// 把那些 hash(key) 不位于 <toId, fromId> 区间的 keys 删除，并返回这些删除的 key-values 。
+
 		hash = GetPeerID(k, n.config.KeySize)
 		if !BetweenRightIncl(hash, toId, fromId) {
 			// remove kv from our data store
