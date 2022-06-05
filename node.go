@@ -373,6 +373,92 @@ func (n *Node) join(other *chordpb.Node) error {
  */
 //
 // 定时更新后继
+//
+// Chord 通过在每个节点的后台周期性的进行 stabilization 询问后继节点的前序节点是不是自己来更新后继节点以及路由表中的项。
+//
+//
+// 这个加入操作会带来两方面的影响：
+//
+//	1) 正确性方面：
+//	  当一个节点加入系统，而一个查找发生在 stabilization 结束前，那么此时系统会有三个状态：
+//		A. 所有后继指针和路由表项都正确时：对正确性没有影响。
+//		B. 后继指针正确但表项不正确：查找结果正确，但速度稍慢（在目标节点和目标节点的后继处加入非常多个节点时）。
+//		C. 后继指针和路由表项都不正确：此时查找失败，Chord上层的软件会发现数据查找失败，在一段时间后会进行重试。
+//	  总结一下：节点加入对数据查找没有影响。
+//
+//	2) 效率方面：
+//		当 stabilization 完成时，对查找效率的影响不会超过O(log N) 的时间。
+//		当 stabilization 未完成时，在目标节点和目标节点的后继处加入非常多个节点时才会有性能影响。
+//		可以证明，只要路由表调整速度快于网络节点数量加倍的速度，性能就不受影响。
+//
+//
+// Chord 节点失败的处理
+//
+//	可以看出，Chord 依赖后继指针的正确性以保证整个网络的正确性。
+//	为了防止这样的情况，每个节点都包含一个大小为 r 的后继节点列表，一个后续节点失效了就依次尝试列表中的其他后继节点。
+//	可以证明，在失效几率为 1/2 的网络中，寻找后继的时间为 O(logN) 。
+//
+//
+// Chord的特征和应用
+//
+//	特征：去中心化，高可用度，高伸缩性，负载平衡，命名灵活。
+//	应用：全球文件系统、命名服务、数据库请求处理、互联网级别的数据结构、通信服务、事件通知、文件共享。
+//
+//
+// Chord 是一个算法，也是一个协议。
+// 作为一个算法，Chord 可以从数学的角度严格证明其正确性和收敛性；
+// 作为一个协议，Chord 详细定义了每个环节的消息类型。
+// 当然，Chord 之所以受追捧，还有一个主要原因就是 Chord 足够简单，千行左右的代码就足以实现一个完整的 Chord 。
+//
+// Chord 还可以被作为一个一致性哈希、分布式哈希的实现。
+// Chord 这样的 DHT 的实现，本质上是在一致性哈希的基础上，添加了 Finger 表这样的高速路由信息，
+// 通过在节点上保存整个网络的部分信息，让节点的查找/路由以 O(logN) 的代价实现，适合大型 p2p 网络。
+//
+//
+//
+// 其实 Chord 算法可以完全转换为一个数学问题：
+// 	在 Chord 环上任意标记个点作为 Node 集合，任意指定 Node T ，从任意的 Node N 开始根据 Chord 查找算法都能找到节点 T 。
+//
+// 为什么能这么转换呢？
+//	因为只要找到了 Key 的直接前继，也就算找到了 Key ，所有问题转化为一个在 Chord 环上通过 Node 找 Node 的问题。
+//	这样，这个题就马上变的很神奇，假如我们把查找的步骤记录为路径，又转化为任意 2 个节点之间存在一条最短路径，
+//	而 Chord 算法其实就是构造了这样一条最短路径，那这样的路径会不会不存在呢？
+//	不会的，因为 Chord 本身是一个环，最差情况可以通过线性查找保证其收敛性。
+//
+//	从最短路径的角度来看，Chord 只是对已存在线性路径的改进，根据这个思路，我们完全可以设计出其他的最短路径算法。
+//	从算法本来来看，保证算法收敛或正确性的前提是每个 Node 要正确地维护其后继节点，但在一个大型的 P2P 网络中，
+//	会有节点的频繁加入、退出，如果没有额外的工作，很难保证每个节点有正确的后继。
+//
+// Chord 冗余性：
+//
+//	所谓冗余性是指 Chord 的 Finger 表中存在无用项，那些处在 Node N 和其 successor 之间的项均无意义，
+//	因为这些项所代表的 successor 不存在。
+//
+//	比如在 N1 的 Finger 表中的第 1～5 项均不存在，故都指向了 N18 ，至少第 1～4 项为冗余信息。
+//
+//	一般说来，假如 Chord 环的大小为 2^m ，节点数为 2^n ，假如节点平均分布在 Chord 环上，
+//	则任一节点 N 的 Finger 表中的第 i 项为冗余的条件为：N+2^(i-1) < N + 2^m/2^n => 2^(i-1) < 2^(m-n) => i<m-n+1，即当 i < m-n+1 时才有冗余。
+//	冗余度为：(m-n+1)/m=1（n-1)/m ，一般说来 m>>n ，所以 Chord 会存在很多的冗余信息。
+//
+//	假如，网络上有 1024 个节点，即 n=10 ，则冗余度为: 1-(10-1)/160 ≈ 94% 。
+//	所以很多论文都指出这一点，并认为会造成冗余查询，降低性能。
+//	其实不然，因为这些冗余信息是分布在多个 Node 的 Finger 表，如果采取适当的路由算法，对路由计算不会有任何影响。
+//
+//	至此，我们已经完整地讨论了 Chord 算法及其核心思想。
+//
+//
+//————————————————
+//版权声明：本文为CSDN博主「纯粹的码农」的原创文章，遵循CC 4.0 BY-SA版权协议，转载请附上原文出处链接及本声明。
+//原文链接：https://blog.csdn.net/chen77716/article/details/6059575
+//
+//————————————————
+//版权声明：本文为CSDN博主「纯粹的码农」的原创文章，遵循CC 4.0 BY-SA版权协议，转载请附上原文出处链接及本声明。
+//原文链接：https://blog.csdn.net/chen77716/article/details/6059575
+//————————————————
+//版权声明：本文为CSDN博主「纯粹的码农」的原创文章，遵循CC 4.0 BY-SA版权协议，转载请附上原文出处链接及本声明。
+//原文链接：https://blog.csdn.net/chen77716/article/details/6059575
+//
+//
 func (n *Node) stabilize() {
 	/* PSEUDOCODE from paper
 	x = successor.predecessor
@@ -548,6 +634,15 @@ func (n *Node) reconcileSuccessorList(succList *chordpb.SuccessorList) {
 // TODO: come back to this after implementing replica groups
 //
 // 查找 target 的后继
+//
+//
+// 当在某个节点上查找资源时，首先判断其后继节点是不是就持有该资源，
+// 若没有则直接从该节点的路由表从最远处开始查找，看哪一项离持有资源的节点最近（发现后跳转），
+// 若没有则说明本节点自身就有要寻找的资源。如此迭代下去。
+//
+//
+// 当前节点只会把请求发送给 succ 或者路由表中某个 node ，如果事实上是自身持有这个数据，
+// 会通过 succ => ... => succ 环路，最终查找到自己。
 func (n *Node) findSuccessor(id []byte) (*chordpb.Node, error) {
 
 	// 获取当前节点的直接后继
@@ -722,6 +817,10 @@ func (n *Node) initSuccessorList() {
  * 		node in the ring is responsible for the key, then call
  *		GetRPC if the node is remote.
  */
+//
+//
+//
+//
 func (n *Node) get(key string) ([]byte, error) {
 
 	// 获取 key 归属的 node
@@ -800,7 +899,7 @@ func (n *Node) put(key string, value []byte) error {
 func (n *Node) locate(key string) (*chordpb.Node, error) {
 	// hash(key)
 	hash := GetPeerID(key, n.config.KeySize)
-	// 查找本地路由表中，key 的直接后继。
+	// 查找 key 的直接后继。
 	node, err := n.findSuccessor(hash)
 	if err != nil || node == nil {
 		log.Errorf("error locating node storing the key %s with hash %d\n", key, hash)
